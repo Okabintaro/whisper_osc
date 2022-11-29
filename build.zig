@@ -68,7 +68,22 @@ pub fn build(b: *std.build.Builder) void {
     whisper_osc.install();
     whisper_osc.linkLibrary(whisper);
     whisper_osc.linkLibrary(tinyosc);
-    whisper_osc.linkSystemLibrary("SDL2");
+
+    if (whisper_osc.target.isWindows()) {
+        whisper_osc.addLibPath("SDL2-2.26.0/x86_64-w64-mingw32/lib/");
+        whisper_osc.addIncludeDir("./SDL2-2.26.0/x86_64-w64-mingw32/include/SDL2");
+        whisper_osc.defineCMacro("SDL_MAIN_HANDLED", "1");
+        whisper_osc.linkSystemLibraryName("SDL2");
+        whisper_osc.linkSystemLibrary("wsock32");
+        whisper_osc.linkSystemLibrary("pthread");
+        whisper_osc.linkSystemLibrary("ws2_32");
+        whisper_osc.linkSystemLibrary("c");
+        whisper_osc.linkSystemLibrary("gdi32");
+        whisper_osc.linkSystemLibrary("user32");
+        whisper_osc.linkSystemLibrary("kernel32");
+    } else {
+        whisper_osc.linkSystemLibrary("SDL2");
+    }
 
     const run_cmd = whisper_osc.run();
     run_cmd.step.dependOn(b.getInstallStep());
@@ -79,20 +94,22 @@ pub fn build(b: *std.build.Builder) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    const tinyosc_main = b.addExecutable("tinyosc_main", null);
-    tinyosc_main.setTarget(target);
-    tinyosc_main.setBuildMode(mode);
-    tinyosc_main.addIncludeDir("./deps/tinyosc");
-    tinyosc_main.addCSourceFile("./deps/tinyosc/main.c", &.{});
-    tinyosc_main.linkLibC();
-    tinyosc_main.install();
-    tinyosc_main.linkLibrary(tinyosc);
+    if (target.isLinux()) {
+        const tinyosc_main = b.addExecutable("tinyosc_main", null);
+        tinyosc_main.setTarget(target);
+        tinyosc_main.setBuildMode(mode);
+        tinyosc_main.addIncludeDir("./deps/tinyosc");
+        tinyosc_main.addCSourceFile("./deps/tinyosc/main.c", &.{});
+        tinyosc_main.linkLibC();
+        tinyosc_main.install();
+        tinyosc_main.linkLibrary(tinyosc);
 
-    const run_osc_cmd = tinyosc_main.run();
-    run_osc_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
+        const run_osc_cmd = tinyosc_main.run();
+        run_osc_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| {
+            run_cmd.addArgs(args);
+        }
+        const run_osc_step = b.step("listen_osc", "Run the tinyosc sample");
+        run_osc_step.dependOn(&run_osc_cmd.step);
     }
-    const run_osc_step = b.step("listen_osc", "Run the tinyosc sample");
-    run_osc_step.dependOn(&run_osc_cmd.step);
 }

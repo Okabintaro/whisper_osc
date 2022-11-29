@@ -15,14 +15,23 @@
 #include <thread>
 #include <vector>
 
-#include <arpa/inet.h>
-#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+
+#ifdef _WIN32
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <unistd.h>
+#endif
 
 //  500 -> 00:05.000
 // 6000 -> 01:00.000
@@ -316,6 +325,15 @@ int main(int argc, char **argv) {
   int sockfd;
   struct sockaddr_in addr;
 
+#if _WIN32
+  WSADATA wsa;
+  // Initialise winsock
+  if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+    printf("Failed initializing winsock. Error: %d", WSAGetLastError());
+    return -1;
+  }
+#endif
+
   if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
     perror("Failure creating socket");
     return -1;
@@ -451,7 +469,7 @@ int main(int argc, char **argv) {
 
               // send the data out of the socket
               // send(socket_fd, buffer, len, 0);
-              sendto(sockfd, (const char *)buffer, len, MSG_CONFIRM,
+              sendto(sockfd, (const char *)buffer, len, 0,
                      (struct sockaddr *)&addr, sizeof(addr));
             }
 
