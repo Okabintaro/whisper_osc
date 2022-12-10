@@ -99,6 +99,12 @@ pub fn build(b: *std.build.Builder) void {
     whisper_zig.linkLibrary(tinyosc);
     whisper_zig.linkLibrary(fvad);
 
+    const whisper_test = b.addTest("./src/CircularBuffer.zig");
+    whisper_test.setBuildMode(mode);
+    whisper_test.setTarget(target);
+    const test_step = b.step("test", "Run library tests");
+    test_step.dependOn(&whisper_test.step);
+
     // C++ Implementation
     const whisper_osc = b.addExecutable("whisper_osc", null);
     whisper_osc.setTarget(target);

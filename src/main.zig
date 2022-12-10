@@ -8,44 +8,27 @@ const fvad = @cImport({
     @cInclude("fvad.h");
 });
 
+const w = @cImport({
+    @cInclude("whisper.h");
+});
+
 const wav = @import("deps/zig-wav/wav.zig");
+const circbuf = @import("CircularBuffer.zig");
+pub const log_level: std.log.Level = .info;
 
 const WHISPER_SAMPLE_RATE = 16000;
-const buffersize_bytes = WHISPER_SAMPLE_RATE * 30 * 4;
-var gbuffer: [buffersize_bytes]u8 = .{0} ** buffersize_bytes;
 
-pub fn writeWavTest() anyerror!void {
-    var file = try std.fs.cwd().createFile("test.wav", .{});
-    defer file.close();
-    const MySaver = wav.Saver(@TypeOf(file).Writer);
-    try MySaver.writeHeader(file.writer(), .{
-        .num_channels = 1,
-        .sample_rate = WHISPER_SAMPLE_RATE,
-        .format = .signed16_lsb,
-    });
-
-    var i: usize = 0;
-    while (i < WHISPER_SAMPLE_RATE) : (i += 1) {
-        const x: f32 = (@intToFloat(f32, i) / @intToFloat(f32, WHISPER_SAMPLE_RATE)) * 880.0;
-        const y: i16 = @floatToInt(i16, std.math.sin(x) * 32767.0);
-        try file.writer().writeIntLittle(i16, y);
-    }
-
-    try MySaver.patchHeader(file.writer(), file.seekableStream(), WHISPER_SAMPLE_RATE * 2);
-}
+const bufferSamples = WHISPER_SAMPLE_RATE * 60;
+const AudioBuffer = circbuf.AudioBuffer(bufferSamples, 4096, f32);
+var continousBuffer = AudioBuffer{};
+var speechBuffer: [bufferSamples]f32 = .{0} ** bufferSamples;
 
 pub fn main() anyerror!void {
-    var fba = std.heap.FixedBufferAllocator.init(&gbuffer);
-    const allocator = fba.allocator();
-    var audioSlice = try allocator.alloc(i16, WHISPER_SAMPLE_RATE * 20);
-    var asi: usize = 0;
-    var n_slice: usize = 0;
-    try writeWavTest();
-
     if (sdl.SDL_Init(sdl.SDL_INIT_AUDIO) < 0) {
         sdl.SDL_LogError(sdl.SDL_LOG_CATEGORY_APPLICATION, "Couldn't initialize SDL: %s\n", sdl.SDL_GetError());
         return;
     }
+    const stdout = std.io.getStdOut().writer();
 
     var capture_id: i32 = 2;
     _ = sdl.SDL_SetHintWithPriority(sdl.SDL_HINT_AUDIO_RESAMPLING_MODE, "medium", sdl.SDL_HINT_OVERRIDE);
@@ -74,7 +57,6 @@ pub fn main() anyerror!void {
 
     // const n_samples: i32 = (3000 / 1000) * WHISPER_SAMPLE_RATE;
     const n_samples: i32 = WHISPER_SAMPLE_RATE / 4;
-    var buffer: [n_samples * 2]f32 = [_]f32{0} ** (n_samples * 2);
     std.log.debug("n_samples: {d}", .{n_samples});
     // const int n_samples_len = (params.length_ms / 1000.0) * WHISPER_SAMPLE_RATE;
     // const int n_samples_30s = 30 * WHISPER_SAMPLE_RATE;
@@ -97,9 +79,22 @@ pub fn main() anyerror!void {
         return;
     }
 
+    // TODO: Move to its own module for Debouncing
     var voiceDetected: bool = false;
-    var voiceDetected_: bool = false;
-    var voiceSamples: u32 = 0;
+    var voiceSamples: usize = 0;
+    var voiceDetecedFiltered: bool = false;
+    var voiceDetecedFiltered_: bool = false;
+
+    var voiceStart: usize = 0;
+    var voiceEnd: usize = 0;
+
+    // Init whisper
+    var whisper = w.whisper_init("./models/ggml-tiny.en.bin");
+    var w_params = w.whisper_full_default_params(0);
+    w_params.n_threads = 6;
+    w_params.print_progress = false;
+    w_params.print_timestamps = false;
+    w_params.no_context = true;
 
     std.log.info("Ready... Waiting for input.", .{});
     while (is_running) {
@@ -131,85 +126,90 @@ pub fn main() anyerror!void {
         }
         // Load Audio into buffer
         var n_samples_new: u32 = sdl.SDL_GetQueuedAudioSize(audio_device) / @sizeOf(f32);
-        _ = sdl.SDL_DequeueAudio(audio_device, &buffer, n_samples_new * @sizeOf(f32));
+        _ = sdl.SDL_DequeueAudio(audio_device, &continousBuffer.buffer[continousBuffer.end], n_samples_new * @sizeOf(f32));
+        continousBuffer.produced();
 
-        // Dumb energy/volume based VAD
-        {
-            var i: u32 = n_samples_new;
-            var sum: f32 = 0;
-            while (i > 0) : (i -= 1) {
-                sum += std.math.absFloat(buffer[i]);
-            }
-            // std.log.debug("Sum: {d}", .{sum});
-        }
+        // TODO: Fill circular buffer
 
-        // FVad: Detect Voice
-        {
-            var i: usize = 0;
+        // FVad: Detect Voice Segments in input
+        voiceDetected = vad: {
+            const buffer = continousBuffer.get();
+            // std.log.debug("inbuffer: {d}!", .{buffer});
             var vad_buffer: [480]i16 = undefined;
             var n_detections: i32 = 0;
-            var all_detections: i32 = 0;
-            while (i < n_samples_new) {
-                var j: usize = 0;
-                while (j < vad_buffer.len) {
-                    const floatval = std.math.clamp(buffer[i], -1.0, 1.0);
-                    vad_buffer[j] = @floatToInt(i16, floatval * 32767.0);
-                    i += 1;
-                    j += 1;
-                }
-                all_detections += 1;
+            const n_slices = @divFloor(buffer.len, 480);
 
+            var i: usize = 0;
+            var k: usize = 0;
+            while (k < n_slices) : (k += 1) {
+                var j: usize = 0;
+                while (j < vad_buffer.len) : (j += 1) {
+                    const floatval = std.math.clamp(buffer[i], -1.0, 1.0);
+                    i += 1;
+                    // TODO: Introduce volume meter here?
+                    vad_buffer[j] = @floatToInt(i16, floatval * 32767.0);
+                }
+                // std.log.debug("buffer: {d}!", .{vad_buffer});
                 n_detections += fvad.fvad_process(fvad_handle, &vad_buffer, vad_buffer.len);
             }
+            voiceDetected = n_detections == n_slices;
 
-            voiceDetected_ = voiceDetected;
-            voiceDetected = n_detections == all_detections;
-            if (!voiceDetected_ and voiceDetected) {
-                std.log.info("Voice detected: {d}/{d}!", .{ n_detections, all_detections });
-            }
-            if (voiceDetected) {
-                voiceSamples += 1;
-                // Save into audioSlice for saving
-                {
-                    i = 0;
-                    while (i < n_samples_new) : (i += 1) {
-                        const floatval = std.math.clamp(buffer[i], -1.0, 1.0);
-                        audioSlice[asi] = @floatToInt(i16, floatval * 32767.0);
-                        asi += 1;
-                    }
+            // std.log.debug("detections: {d}!", .{n_detections});
+            break :vad voiceDetected;
+        };
+
+        if (voiceDetected) {
+            voiceSamples += 1;
+        } else {
+            voiceEnd = continousBuffer.start;
+            voiceSamples = 0;
+        }
+        voiceDetecedFiltered = voiceSamples >= 3;
+        if (voiceDetecedFiltered and !voiceDetecedFiltered_) {
+            voiceStart = continousBuffer.start - 4 * 4096;
+            std.log.info("Voice detected! s: {d}", .{voiceStart});
+        }
+        if (!voiceDetecedFiltered and voiceDetecedFiltered_) {
+            std.log.info("Voice lost: s:{d}, e:{d}", .{ voiceStart, voiceEnd });
+
+            // Save the saved slices into wav
+            const w_samples = continousBuffer.copyTo(&speechBuffer, voiceStart, voiceEnd);
+            const speech = speechBuffer[0..w_samples];
+            const save_wav = false;
+            if (save_wav) {
+                // TODO: Optimize, buffer and move to another thread probably
+                var file = try std.fs.cwd().createFile("test.wav", .{});
+                defer file.close();
+                const MySaver = wav.Saver(@TypeOf(file).Writer);
+                try MySaver.writeHeader(file.writer(), .{
+                    .num_channels = 1,
+                    .sample_rate = WHISPER_SAMPLE_RATE,
+                    .format = .signed16_lsb,
+                });
+                std.log.debug("Writing {d} samples to {s}!", .{ w_samples, "test.wav" });
+                for (speech) |sample| {
+                    const floatval = std.math.clamp(sample, -1.0, 1.0);
+                    const y = @floatToInt(i16, floatval * 32767.0);
+                    try file.writer().writeIntLittle(i16, y);
                 }
-                // Copy samples into audioSlice
+
+                try MySaver.patchHeader(file.writer(), file.seekableStream(), w_samples * 2);
             }
-            if (voiceDetected_ and !voiceDetected) {
-                std.log.info("Voice lost after {d}", .{voiceSamples});
-                voiceSamples = 0;
-                // Save the saved slices into wav
-                {
-                    var file = try std.fs.cwd().createFile("test.wav", .{});
-                    defer file.close();
-                    const MySaver = wav.Saver(@TypeOf(file).Writer);
-                    try MySaver.writeHeader(file.writer(), .{
-                        .num_channels = 1,
-                        .sample_rate = WHISPER_SAMPLE_RATE,
-                        .format = .signed16_lsb,
-                    });
 
-                    std.log.debug("Writing {d} samples to {s}!", .{ asi, "test.wav" });
-                    i = 0;
-                    while (i < asi) : (i += 1) {
-                        const y: i16 = audioSlice[i];
-                        try file.writer().writeIntLittle(i16, y);
-                    }
-                    asi = 0;
-
-                    try MySaver.patchHeader(file.writer(), file.seekableStream(), asi * 2);
-                    n_slice += 1;
-                    break;
+            // TODO: Detect using whisper
+            {
+                const ret = w.whisper_full(whisper, w_params, @ptrCast([*c]const f32, speech), @intCast(c_int, speech.len));
+                std.log.info("whisper ret: {d}", .{ret});
+                const n_segments = w.whisper_full_n_segments(whisper);
+                var i: c_int = 0;
+                while (i < n_segments) : (i += 1) {
+                    const text = w.whisper_full_get_segment_text(whisper, i);
+                    try stdout.print("Text: {s}\n", .{text});
                 }
             }
         }
+        voiceDetecedFiltered_ = voiceDetecedFiltered;
 
-        //
         n_iter += 1;
     } // While
 
@@ -218,4 +218,6 @@ pub fn main() anyerror!void {
     sdl.SDL_CloseAudioDevice(audio_device);
     sdl.SDL_CloseAudio();
     sdl.SDL_Quit();
+    w.whisper_free(whisper);
+    std.log.info("ByeBye", .{});
 }
