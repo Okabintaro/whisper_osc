@@ -1,9 +1,28 @@
 const std = @import("std");
 
+fn linkSDL(step: *std.build.LibExeObjStep) void {
+    if (step.target.isWindows()) {
+        step.addLibPath("deps/SDL2-2.26.0/x86_64-w64-mingw32/lib/");
+        step.addIncludeDir("deps/SDL2-2.26.0/x86_64-w64-mingw32/include/SDL2");
+        step.defineCMacro("SDL_MAIN_HANDLED", "1");
+        step.linkSystemLibraryName("SDL2");
+        step.linkSystemLibrary("wsock32");
+        step.linkSystemLibrary("pthread");
+        step.linkSystemLibrary("ws2_32");
+        step.linkSystemLibrary("c");
+        step.linkSystemLibrary("gdi32");
+        step.linkSystemLibrary("user32");
+        step.linkSystemLibrary("kernel32");
+    } else {
+        step.linkSystemLibrary("SDL2");
+    }
+}
+
 pub fn build(b: *std.build.Builder) void {
     const target = b.standardTargetOptions(.{});
     const mode = b.standardReleaseOptions();
 
+    // Dependencies as static libraries
     const whisper = b.addStaticLibrary("whisper", null);
     whisper.setTarget(target);
     whisper.setBuildMode(mode);
@@ -21,34 +40,10 @@ pub fn build(b: *std.build.Builder) void {
         "-mfma",
         "-mf16c",
     });
-
-    // Original examples
-    // const whisper_example = b.addExecutable("whisper_main", null);
-    // whisper_example.setTarget(target);
-    // whisper_example.addIncludeDir("./whisper.cpp");
-    // whisper_example.addIncludeDir("./whisper.cpp/examples/");
-    // whisper_example.addCSourceFile("./whisper.cpp/examples/main/main.cpp", &.{});
-    // whisper_example.linkLibCpp();
-    // whisper_example.install();
-    // whisper_example.linkLibrary(whisper);
-    // whisper_example.setBuildMode(mode);
-
-    // const whisper_stream = b.addExecutable("whisper_stream", null);
-    // whisper_stream.setTarget(target);
-    // whisper_stream.addIncludeDir("./whisper.cpp");
-    // whisper_stream.addIncludeDir("./whisper.cpp/examples/");
-    // whisper_stream.addCSourceFile("./whisper.cpp/examples/stream/stream.cpp", &.{});
-    // whisper_stream.linkLibCpp();
-    // whisper_stream.install();
-    // whisper_stream.linkLibrary(whisper);
-    // whisper_stream.setBuildMode(mode);
-    // whisper_stream.linkSystemLibrary("SDL2");
-
     const tinyosc = b.addStaticLibrary("tinyosc", null);
     tinyosc.setTarget(target);
     tinyosc.setBuildMode(mode);
     tinyosc.addIncludeDir("./deps/tinyosc");
-    tinyosc.linkLibCpp();
     tinyosc.linkLibC();
     tinyosc.addCSourceFiles(&.{
         "./deps/tinyosc/tinyosc.c",
@@ -56,7 +51,55 @@ pub fn build(b: *std.build.Builder) void {
         "-Wall",
         "-W",
     });
+    // fvad for voice activity detection
+    const fvad_path = "./deps/libfvad";
+    const fvad = b.addStaticLibrary("fvad", null);
+    fvad.setTarget(target);
+    fvad.setBuildMode(mode);
+    fvad.addIncludeDir(fvad_path ++ "/include");
+    fvad.addIncludeDir(fvad_path ++ "/src");
+    fvad.linkLibC();
+    fvad.addCSourceFiles(&.{
+        fvad_path ++ "/src/common.h",
+        fvad_path ++ "/src/fvad.c",
+        fvad_path ++ "/src/signal_processing/division_operations.c",
+        fvad_path ++ "/src/signal_processing/energy.c",
+        fvad_path ++ "/src/signal_processing/get_scaling_square.c",
+        fvad_path ++ "/src/signal_processing/resample_48khz.c",
+        fvad_path ++ "/src/signal_processing/resample_by_2_internal.h",
+        fvad_path ++ "/src/signal_processing/resample_by_2_internal.c",
+        fvad_path ++ "/src/signal_processing/resample_fractional.c",
+        fvad_path ++ "/src/signal_processing/signal_processing_library.h",
+        fvad_path ++ "/src/signal_processing/spl_inl.h",
+        fvad_path ++ "/src/signal_processing/spl_inl.c",
+        fvad_path ++ "/src/vad/vad_core.h",
+        fvad_path ++ "/src/vad/vad_core.c",
+        fvad_path ++ "/src/vad/vad_filterbank.h",
+        fvad_path ++ "/src/vad/vad_filterbank.c",
+        fvad_path ++ "/src/vad/vad_gmm.h",
+        fvad_path ++ "/src/vad/vad_gmm.c",
+        fvad_path ++ "/src/vad/vad_sp.h",
+        fvad_path ++ "/src/vad/vad_sp.c",
+    }, &.{
+        "-Wall",
+        "-W",
+    });
 
+    // Zig Implementation
+    const whisper_zig = b.addExecutable("whisperzig", "src/main.zig");
+    whisper_zig.setTarget(target);
+    whisper_zig.setBuildMode(mode);
+    whisper_zig.addIncludeDir("./deps/whisper.cpp");
+    whisper_zig.addIncludeDir("./deps/whisper.cpp/examples/");
+    whisper_zig.addIncludeDir(fvad_path ++ "/include");
+    whisper_zig.addIncludeDir("./deps/tinyosc");
+    whisper_zig.linkLibCpp();
+    whisper_zig.install();
+    whisper_zig.linkLibrary(whisper);
+    whisper_zig.linkLibrary(tinyosc);
+    whisper_zig.linkLibrary(fvad);
+
+    // C++ Implementation
     const whisper_osc = b.addExecutable("whisper_osc", null);
     whisper_osc.setTarget(target);
     whisper_osc.setBuildMode(mode);
@@ -69,30 +112,24 @@ pub fn build(b: *std.build.Builder) void {
     whisper_osc.linkLibrary(whisper);
     whisper_osc.linkLibrary(tinyosc);
 
-    if (whisper_osc.target.isWindows()) {
-        whisper_osc.addLibPath("SDL2-2.26.0/x86_64-w64-mingw32/lib/");
-        whisper_osc.addIncludeDir("./SDL2-2.26.0/x86_64-w64-mingw32/include/SDL2");
-        whisper_osc.defineCMacro("SDL_MAIN_HANDLED", "1");
-        whisper_osc.linkSystemLibraryName("SDL2");
-        whisper_osc.linkSystemLibrary("wsock32");
-        whisper_osc.linkSystemLibrary("pthread");
-        whisper_osc.linkSystemLibrary("ws2_32");
-        whisper_osc.linkSystemLibrary("c");
-        whisper_osc.linkSystemLibrary("gdi32");
-        whisper_osc.linkSystemLibrary("user32");
-        whisper_osc.linkSystemLibrary("kernel32");
-    } else {
-        whisper_osc.linkSystemLibrary("SDL2");
-    }
+    linkSDL(whisper_osc);
+    linkSDL(whisper_zig);
 
-    const run_cmd = whisper_osc.run();
+    const run_cmd = whisper_zig.run();
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
-
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
+
+    const run_cpp_cmd = whisper_osc.run();
+    run_cpp_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_cpp_cmd.addArgs(args);
+    }
+    const run_cpp_step = b.step("run_cpp", "Run the C++ app/example");
+    run_cpp_step.dependOn(&run_cpp_cmd.step);
 
     if (target.isLinux()) {
         const tinyosc_main = b.addExecutable("tinyosc_main", null);
