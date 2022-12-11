@@ -12,6 +12,11 @@ const w = @cImport({
     @cInclude("whisper.h");
 });
 
+const network = @import("./deps/zig-network/network.zig");
+const tinyosc = @cImport(
+    @cInclude("tinyosc.h"),
+);
+
 const wav = @import("deps/zig-wav/wav.zig");
 const circbuf = @import("CircularBuffer.zig");
 pub const log_level: std.log.Level = .info;
@@ -74,7 +79,7 @@ pub fn main() anyerror!void {
         std.log.err("Invalid sample rate: {d}", .{WHISPER_SAMPLE_RATE});
         return;
     }
-    if (fvad.fvad_set_mode(fvad_handle, 0) != 0) {
+    if (fvad.fvad_set_mode(fvad_handle, 3) != 0) {
         std.log.err("Can't set vad mode, it's invalid", .{});
         return;
     }
@@ -95,6 +100,16 @@ pub fn main() anyerror!void {
     w_params.print_progress = false;
     w_params.print_timestamps = false;
     w_params.no_context = true;
+
+    try network.init();
+    defer network.deinit();
+    var sock = try network.Socket.create(.ipv4, .udp);
+    defer sock.close();
+    try sock.connect(.{
+        .address = .{ .ipv4 = network.Address.IPv4.init(127, 0, 0, 1) },
+        .port = 9000,
+    });
+    var msgbuf: [256]u8 = undefined;
 
     std.log.info("Ready... Waiting for input.", .{});
     while (is_running) {
@@ -147,7 +162,7 @@ pub fn main() anyerror!void {
                     const floatval = std.math.clamp(buffer[i], -1.0, 1.0);
                     i += 1;
                     // TODO: Introduce volume meter here?
-                    vad_buffer[j] = @floatToInt(i16, floatval * 32767.0 * 0.5);
+                    vad_buffer[j] = @floatToInt(i16, floatval * 32767.0);
                 }
                 // std.log.debug("buffer: {d}!", .{vad_buffer});
                 n_detections += fvad.fvad_process(fvad_handle, &vad_buffer, vad_buffer.len);
@@ -175,6 +190,8 @@ pub fn main() anyerror!void {
             std.debug.assert(start > 0);
             voiceStart = @intCast(usize, start);
             std.log.info("Voice detected! s: {d}", .{voiceStart});
+            const msg_len = tinyosc.tosc_writeMessage(&msgbuf, msgbuf.len, "/chatbox/typing", "T", true);
+            _ = try sock.send(msgbuf[0..msg_len]);
         }
         if (!voiceDetecedFiltered and voiceDetecedFiltered_) {
             std.log.info("Voice lost: s:{d}, e:{d}", .{ voiceStart, voiceEnd });
@@ -185,18 +202,30 @@ pub fn main() anyerror!void {
 
             // Detect using whisper
             {
+                var strbuf: [320]u8 = undefined;
                 const ret = w.whisper_full(whisper, w_params, @ptrCast([*c]const f32, speech), @intCast(c_int, speech.len));
                 std.log.info("whisper ret: {d}", .{ret});
                 const n_segments = w.whisper_full_n_segments(whisper);
                 var i: c_int = 0;
+                var stri: usize = 0;
                 while (i < n_segments) : (i += 1) {
-                    const text = w.whisper_full_get_segment_text(whisper, i);
-                    try stdout.print("Text: {s}\n", .{text});
+                    const text = std.mem.span(w.whisper_full_get_segment_text(whisper, i));
+                    if (std.mem.count(u8, text, "[") > 0 or std.mem.count(u8, text, "(") > 0) {
+                        std.log.info("Ignoring non text segment {s}", .{text});
+                        continue;
+                    }
+                    std.mem.copy(u8, strbuf[stri..], text);
+                    stri += text.len;
                 }
+                strbuf[stri] = 0;
+                const fullText = strbuf[0 .. stri + 1];
+                try stdout.print("Text: {s}\n", .{fullText});
+                const msg_len = tinyosc.tosc_writeMessage(&msgbuf, msgbuf.len, "/chatbox/input", "sTT", @ptrCast([*]const u8, fullText), true, true);
+                _ = try sock.send(msgbuf[0..msg_len]);
             }
 
             // Save wav with the detected text
-            const save_wav = true;
+            const save_wav = false;
             if (save_wav) {
                 // TODO: Optimize, buffer and move to another thread probably
                 var fileNameBuf: [256]u8 = undefined;
@@ -215,7 +244,6 @@ pub fn main() anyerror!void {
                     const y = @floatToInt(i16, floatval * 32767.0);
                     try file.writer().writeIntLittle(i16, y);
                 }
-
                 try MySaver.patchHeader(file.writer(), file.seekableStream(), w_samples * 2);
             }
         }

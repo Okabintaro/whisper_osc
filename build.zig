@@ -2,8 +2,8 @@ const std = @import("std");
 
 fn linkSDL(step: *std.build.LibExeObjStep) void {
     if (step.target.isWindows()) {
-        step.addLibPath("deps/SDL2-2.26.0/x86_64-w64-mingw32/lib/");
-        step.addIncludeDir("deps/SDL2-2.26.0/x86_64-w64-mingw32/include/SDL2");
+        step.addLibraryPath("deps/SDL2-2.26.0/x86_64-w64-mingw32/lib/");
+        step.addIncludePath("deps/SDL2-2.26.0/x86_64-w64-mingw32/include/SDL2");
         step.defineCMacro("SDL_MAIN_HANDLED", "1");
         step.linkSystemLibraryName("SDL2");
         step.linkSystemLibrary("wsock32");
@@ -43,7 +43,7 @@ pub fn build(b: *std.build.Builder) void {
     const tinyosc = b.addStaticLibrary("tinyosc", null);
     tinyosc.setTarget(target);
     tinyosc.setBuildMode(mode);
-    tinyosc.addIncludeDir("./deps/tinyosc");
+    tinyosc.addIncludePath("./deps/tinyosc");
     tinyosc.linkLibC();
     tinyosc.addCSourceFiles(&.{
         "./deps/tinyosc/tinyosc.c",
@@ -56,8 +56,8 @@ pub fn build(b: *std.build.Builder) void {
     const fvad = b.addStaticLibrary("fvad", null);
     fvad.setTarget(target);
     fvad.setBuildMode(mode);
-    fvad.addIncludeDir(fvad_path ++ "/include");
-    fvad.addIncludeDir(fvad_path ++ "/src");
+    fvad.addIncludePath(fvad_path ++ "/include");
+    fvad.addIncludePath(fvad_path ++ "/src");
     fvad.linkLibC();
     fvad.addCSourceFiles(&.{
         fvad_path ++ "/src/common.h",
@@ -89,10 +89,10 @@ pub fn build(b: *std.build.Builder) void {
     const whisper_zig = b.addExecutable("whisperzig", "src/main.zig");
     whisper_zig.setTarget(target);
     whisper_zig.setBuildMode(mode);
-    whisper_zig.addIncludeDir("./deps/whisper.cpp");
-    whisper_zig.addIncludeDir("./deps/whisper.cpp/examples/");
-    whisper_zig.addIncludeDir(fvad_path ++ "/include");
-    whisper_zig.addIncludeDir("./deps/tinyosc");
+    whisper_zig.addIncludePath("./deps/whisper.cpp");
+    whisper_zig.addIncludePath("./deps/whisper.cpp/examples/");
+    whisper_zig.addIncludePath(fvad_path ++ "/include");
+    whisper_zig.addIncludePath("./deps/tinyosc");
     whisper_zig.linkLibCpp();
     whisper_zig.install();
     whisper_zig.linkLibrary(whisper);
@@ -105,13 +105,31 @@ pub fn build(b: *std.build.Builder) void {
     const test_step = b.step("test", "Run library tests");
     test_step.dependOn(&whisper_test.step);
 
+    // // Zig OSC test
+    // {
+    //     const zigosc = b.addExecutable("whisperzig", "./src/hello_osc.zig");
+    //     zigosc.setTarget(target);
+    //     zigosc.setBuildMode(mode);
+    //     zigosc.addIncludePath("./deps/tinyosc");
+    //     zigosc.linkLibC();
+    //     zigosc.install();
+    //     zigosc.linkLibrary(tinyosc);
+    //     const run_cmd = zigosc.run();
+    //     run_cmd.step.dependOn(b.getInstallStep());
+    //     if (b.args) |args| {
+    //         run_cmd.addArgs(args);
+    //     }
+    //     const run_step = b.step("runosc", "Run the osc test app");
+    //     run_step.dependOn(&run_cmd.step);
+    // }
+
     // C++ Implementation
     const whisper_osc = b.addExecutable("whisper_osc", null);
     whisper_osc.setTarget(target);
     whisper_osc.setBuildMode(mode);
-    whisper_osc.addIncludeDir("./deps/whisper.cpp");
-    whisper_osc.addIncludeDir("./deps/whisper.cpp/examples/");
-    whisper_osc.addIncludeDir("./deps/tinyosc");
+    whisper_osc.addIncludePath("./deps/whisper.cpp");
+    whisper_osc.addIncludePath("./deps/whisper.cpp/examples/");
+    whisper_osc.addIncludePath("./deps/tinyosc");
     whisper_osc.addCSourceFile("./cpp/whisper_osc.cpp", &.{});
     whisper_osc.linkLibCpp();
     whisper_osc.install();
@@ -141,7 +159,7 @@ pub fn build(b: *std.build.Builder) void {
         const tinyosc_main = b.addExecutable("tinyosc_main", null);
         tinyosc_main.setTarget(target);
         tinyosc_main.setBuildMode(mode);
-        tinyosc_main.addIncludeDir("./deps/tinyosc");
+        tinyosc_main.addIncludePath("./deps/tinyosc");
         tinyosc_main.addCSourceFile("./deps/tinyosc/main.c", &.{});
         tinyosc_main.linkLibC();
         tinyosc_main.install();
