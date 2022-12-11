@@ -89,7 +89,7 @@ pub fn main() anyerror!void {
     var voiceEnd: usize = 0;
 
     // Init whisper
-    var whisper = w.whisper_init("./models/ggml-tiny.en.bin");
+    var whisper = w.whisper_init("./models/ggml-base.en.bin");
     var w_params = w.whisper_full_default_params(0);
     w_params.n_threads = 6;
     w_params.print_progress = false;
@@ -114,7 +114,7 @@ pub fn main() anyerror!void {
 
         // process new audio
         if (n_iter > 0 and sdl.SDL_GetQueuedAudioSize(audio_device) > (2 * n_samples * @sizeOf(f32))) {
-            std.log.warn("WARNING: cannot process audio fast enough, dropping audio...", .{});
+            // std.log.warn("WARNING: cannot process audio fast enough, dropping audio...", .{});
             sdl.SDL_ClearQueuedAudio(audio_device);
         }
 
@@ -147,7 +147,7 @@ pub fn main() anyerror!void {
                     const floatval = std.math.clamp(buffer[i], -1.0, 1.0);
                     i += 1;
                     // TODO: Introduce volume meter here?
-                    vad_buffer[j] = @floatToInt(i16, floatval * 32767.0);
+                    vad_buffer[j] = @floatToInt(i16, floatval * 32767.0 * 0.5);
                 }
                 // std.log.debug("buffer: {d}!", .{vad_buffer});
                 n_detections += fvad.fvad_process(fvad_handle, &vad_buffer, vad_buffer.len);
@@ -166,7 +166,14 @@ pub fn main() anyerror!void {
         }
         voiceDetecedFiltered = voiceSamples >= 3;
         if (voiceDetecedFiltered and !voiceDetecedFiltered_) {
-            voiceStart = continousBuffer.start - 4 * 4096;
+            var start: i64 = @intCast(i64, continousBuffer.start) - 4 * 4096;
+            if (start < 0) {
+                std.debug.print("Wrapping from {d}", .{start});
+                start = (@intCast(i64, continousBuffer.chunksize) * @intCast(i64, continousBuffer.nChunks)) + start;
+                std.debug.print("to {d}", .{start});
+            }
+            std.debug.assert(start > 0);
+            voiceStart = @intCast(usize, start);
             std.log.info("Voice detected! s: {d}", .{voiceStart});
         }
         if (!voiceDetecedFiltered and voiceDetecedFiltered_) {
@@ -175,10 +182,26 @@ pub fn main() anyerror!void {
             // Save the saved slices into wav
             const w_samples = continousBuffer.copyTo(&speechBuffer, voiceStart, voiceEnd);
             const speech = speechBuffer[0..w_samples];
-            const save_wav = false;
+
+            // Detect using whisper
+            {
+                const ret = w.whisper_full(whisper, w_params, @ptrCast([*c]const f32, speech), @intCast(c_int, speech.len));
+                std.log.info("whisper ret: {d}", .{ret});
+                const n_segments = w.whisper_full_n_segments(whisper);
+                var i: c_int = 0;
+                while (i < n_segments) : (i += 1) {
+                    const text = w.whisper_full_get_segment_text(whisper, i);
+                    try stdout.print("Text: {s}\n", .{text});
+                }
+            }
+
+            // Save wav with the detected text
+            const save_wav = true;
             if (save_wav) {
                 // TODO: Optimize, buffer and move to another thread probably
-                var file = try std.fs.cwd().createFile("test.wav", .{});
+                var fileNameBuf: [256]u8 = undefined;
+                const fileName = try std.fmt.bufPrint(&fileNameBuf, "test_{d}.wav", .{n_iter});
+                var file = try std.fs.cwd().createFile(fileName, .{});
                 defer file.close();
                 const MySaver = wav.Saver(@TypeOf(file).Writer);
                 try MySaver.writeHeader(file.writer(), .{
@@ -194,18 +217,6 @@ pub fn main() anyerror!void {
                 }
 
                 try MySaver.patchHeader(file.writer(), file.seekableStream(), w_samples * 2);
-            }
-
-            // TODO: Detect using whisper
-            {
-                const ret = w.whisper_full(whisper, w_params, @ptrCast([*c]const f32, speech), @intCast(c_int, speech.len));
-                std.log.info("whisper ret: {d}", .{ret});
-                const n_segments = w.whisper_full_n_segments(whisper);
-                var i: c_int = 0;
-                while (i < n_segments) : (i += 1) {
-                    const text = w.whisper_full_get_segment_text(whisper, i);
-                    try stdout.print("Text: {s}\n", .{text});
-                }
             }
         }
         voiceDetecedFiltered_ = voiceDetecedFiltered;
