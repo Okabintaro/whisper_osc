@@ -5,7 +5,7 @@ fn linkSDL(step: *std.build.LibExeObjStep) void {
         step.addLibraryPath("deps/SDL2-2.26.0/x86_64-w64-mingw32/lib/");
         step.addIncludePath("deps/SDL2-2.26.0/x86_64-w64-mingw32/include/SDL2");
         step.defineCMacro("SDL_MAIN_HANDLED", "1");
-        step.linkSystemLibraryName("SDL2");
+        step.linkSystemLibrary("SDL2");
         step.linkSystemLibrary("wsock32");
         step.linkSystemLibrary("pthread");
         step.linkSystemLibrary("ws2_32");
@@ -13,6 +13,21 @@ fn linkSDL(step: *std.build.LibExeObjStep) void {
         step.linkSystemLibrary("gdi32");
         step.linkSystemLibrary("user32");
         step.linkSystemLibrary("kernel32");
+        // Taken from https://github.com/MasterQ32/SDL.zig#L278
+        const static_libs = [_][]const u8{
+                    "setupapi",
+                    "user32",
+                    "gdi32",
+                    "winmm",
+                    "imm32",
+                    "ole32",
+                    "oleaut32",
+                    "shell32",
+                    "version",
+                    "uuid",
+                };
+                for (static_libs) |lib|
+                    step.linkSystemLibrary(lib);
     } else {
         step.linkSystemLibrary("SDL2");
     }
@@ -123,20 +138,6 @@ pub fn build(b: *std.build.Builder) void {
     //     run_step.dependOn(&run_cmd.step);
     // }
 
-    // C++ Implementation
-    const whisper_osc = b.addExecutable("whisper_osc", null);
-    whisper_osc.setTarget(target);
-    whisper_osc.setBuildMode(mode);
-    whisper_osc.addIncludePath("./deps/whisper.cpp");
-    whisper_osc.addIncludePath("./deps/whisper.cpp/examples/");
-    whisper_osc.addIncludePath("./deps/tinyosc");
-    whisper_osc.addCSourceFile("./cpp/whisper_osc.cpp", &.{});
-    whisper_osc.linkLibCpp();
-    whisper_osc.install();
-    whisper_osc.linkLibrary(whisper);
-    whisper_osc.linkLibrary(tinyosc);
-
-    linkSDL(whisper_osc);
     linkSDL(whisper_zig);
 
     const run_cmd = whisper_zig.run();
@@ -146,14 +147,6 @@ pub fn build(b: *std.build.Builder) void {
     }
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
-
-    const run_cpp_cmd = whisper_osc.run();
-    run_cpp_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cpp_cmd.addArgs(args);
-    }
-    const run_cpp_step = b.step("run_cpp", "Run the C++ app/example");
-    run_cpp_step.dependOn(&run_cpp_cmd.step);
 
     if (target.isLinux()) {
         const tinyosc_main = b.addExecutable("tinyosc_main", null);

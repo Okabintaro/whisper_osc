@@ -19,7 +19,7 @@ const tinyosc = @cImport(
 
 const wav = @import("deps/zig-wav/wav.zig");
 const circbuf = @import("CircularBuffer.zig");
-pub const log_level: std.log.Level = .info;
+pub const log_level: std.log.Level = .debug;
 
 const WHISPER_SAMPLE_RATE = 16000;
 
@@ -35,7 +35,7 @@ pub fn main() anyerror!void {
     }
     const stdout = std.io.getStdOut().writer();
 
-    var capture_id: i32 = 2;
+    var capture_id: i32 = 1;
     _ = sdl.SDL_SetHintWithPriority(sdl.SDL_HINT_AUDIO_RESAMPLING_MODE, "medium", sdl.SDL_HINT_OVERRIDE);
     const nDevices = sdl.SDL_GetNumAudioDevices(sdl.SDL_TRUE);
     {
@@ -149,7 +149,7 @@ pub fn main() anyerror!void {
         // FVad: Detect Voice Segments in input
         voiceDetected = vad: {
             const buffer = continousBuffer.get();
-            // std.log.debug("inbuffer: {d}!", .{buffer});
+            //std.log.debug("inbuffer: {d}!", .{buffer});
             var vad_buffer: [480]i16 = undefined;
             var n_detections: i32 = 0;
             const n_slices = @divFloor(buffer.len, 480);
@@ -169,7 +169,7 @@ pub fn main() anyerror!void {
             }
             voiceDetected = n_detections == n_slices;
 
-            // std.log.debug("detections: {d}!", .{n_detections});
+            //std.log.debug("detections: {d}!", .{n_detections});
             break :vad voiceDetected;
         };
 
@@ -179,7 +179,7 @@ pub fn main() anyerror!void {
             voiceEnd = continousBuffer.start;
             voiceSamples = 0;
         }
-        voiceDetecedFiltered = voiceSamples >= 3;
+        voiceDetecedFiltered = voiceSamples >= 2;
         if (voiceDetecedFiltered and !voiceDetecedFiltered_) {
             var start: i64 = @intCast(i64, continousBuffer.start) - 4 * 4096;
             if (start < 0) {
@@ -210,7 +210,7 @@ pub fn main() anyerror!void {
                 var stri: usize = 0;
                 while (i < n_segments) : (i += 1) {
                     const text = std.mem.span(w.whisper_full_get_segment_text(whisper, i));
-                    if (std.mem.count(u8, text, "[") > 0 or std.mem.count(u8, text, "(") > 0) {
+                    if (std.mem.count(u8, text, "[") > 0 or std.mem.count(u8, text, "]") > 0) {
                         std.log.info("Ignoring non text segment {s}", .{text});
                         continue;
                     }
@@ -238,7 +238,7 @@ pub fn main() anyerror!void {
                     .sample_rate = WHISPER_SAMPLE_RATE,
                     .format = .signed16_lsb,
                 });
-                std.log.debug("Writing {d} samples to {s}!", .{ w_samples, "test.wav" });
+                std.log.debug("Writing {d} samples to {s}!", .{ w_samples, fileName });
                 for (speech) |sample| {
                     const floatval = std.math.clamp(sample, -1.0, 1.0);
                     const y = @floatToInt(i16, floatval * 32767.0);
